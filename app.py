@@ -97,7 +97,7 @@ async def reconhecer(file: UploadFile = File(...)):
         embedding_obj = DeepFace.represent(
             img_path=temp_path,
             model_name="Facenet512",
-            detector_backend="ssd",
+            detector_backend="opencv",
             enforce_detection=True
         )[0]
 

@@ -1,8 +1,16 @@
 fastapi==0.104.1
 uvicorn==0.24.0
-deepface==0.0.79
 python-multipart==0.0.6
 numpy==1.24.3
 pillow==10.0.1
+
+# DeepFace sem TensorFlow
+deepface==0.0.79
+torch==2.0.1
+torchvision==0.15.2
+
 opencv-python-headless==4.8.1.78
-tensorflow==2.12.0
+
+# Necessário para evitar o erro "setuptools.build_meta"
+setuptools
+wheel
