@@ -1,13 +1,24 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from deepface import DeepFace
 import numpy as np
 import uuid
 import os
 from datetime import datetime
+from supabase import create_client, Client
 import logging
 
+# -------------------------------
+# CONFIGURAÇÃO SUPABASE
+# -------------------------------
+SUPABASE_URL = "https://ywwwcnolqehepqukbrdp.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl3d3djbm9scWVoZXBxdWticmRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM1MTU2NzksImV4cCI6MjA3OTA5MTY3OX0.OXty613JpAwHxt1oFldArwDWhEMZrd8EO5SI0MhPFkI"   # ⚠️ coloque a service_role, não a anon!
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# -------------------------------
+# FASTAPI
+# -------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api")
 
@@ -15,38 +26,38 @@ app = FastAPI(title="EduPass - Reconhecimento Facial")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-facial_db = {}
+# -----------------------------------------
+# ROTAS
+# -----------------------------------------
 
 @app.get("/")
 async def health():
-    return {
-        "status": "online",
-        "usuarios_cadastrados": len(facial_db)
-    }
+    # Conta usuários direto do Supabase
+    result = supabase.table("usuarios_face").select("id", count="exact").execute()
+    total = result.count if result.count is not None else 0
+
+    return {"status": "online", "usuarios_cadastrados": total}
 
 
 @app.post("/cadastrar")
-async def cadastrar(
-    nome: str = Form(...),
-    file: UploadFile = File(...)
-):
+async def cadastrar(nome: str = Form(...), file: UploadFile = File(...)):
+
     if not file.content_type.startswith("image/"):
         return {"success": False, "error": "Envie uma imagem válida."}
 
+    # Cria arquivo temporário
     temp_path = f"temp_{uuid.uuid4()}.jpg"
     with open(temp_path, "wb") as f:
         f.write(await file.read())
 
     try:
-        # Modelo MAIS LEVE para Render
+        # Modelo de embedding
         embedding_obj = DeepFace.represent(
             img_path=temp_path,
             model_name="Facenet512",
@@ -58,13 +69,15 @@ async def cadastrar(
 
         user_id = str(uuid.uuid4())
 
-        facial_db[user_id] = {
+        # Salvar no Supabase
+        data = {
             "id": user_id,
             "nome": nome,
             "embedding": embedding,
             "embedding_size": len(embedding),
-            "data_cadastro": datetime.now().isoformat()
         }
+
+        supabase.table("usuarios_face").insert(data).execute()
 
         os.remove(temp_path)
 
@@ -79,16 +92,17 @@ async def cadastrar(
         return {"success": False, "error": str(e)}
 
 
-
 @app.post("/reconhecer")
 async def reconhecer(file: UploadFile = File(...)):
 
-    if not facial_db:
-        return {
-            "success": False,
-            "error": "Nenhum usuário cadastrado ainda."
-        }
+    # Buscar embeddings
+    result = supabase.table("usuarios_face").select("*").execute()
+    usuarios = result.data
 
+    if not usuarios:
+        return {"success": False, "error": "Nenhum usuário cadastrado ainda."}
+
+    # Upload da imagem temporária
     temp_path = f"temp_{uuid.uuid4()}.jpg"
     with open(temp_path, "wb") as f:
         f.write(await file.read())
@@ -103,14 +117,15 @@ async def reconhecer(file: UploadFile = File(...)):
 
         embedding_atual = np.array(embedding_obj["embedding"])
 
-    except Exception as e:
+    except Exception:
         os.remove(temp_path)
         return {"success": False, "error": "Não foi detectado rosto."}
 
     menor_dist = float("inf")
     usuario_final = None
 
-    for _, user in facial_db.items():
+    # Comparação com TODOS do Supabase
+    for user in usuarios:
         emb = np.array(user["embedding"])
 
         dot = np.dot(embedding_atual, emb)
@@ -124,7 +139,7 @@ async def reconhecer(file: UploadFile = File(...)):
 
     os.remove(temp_path)
 
-    THRESHOLD = 0.35 
+    THRESHOLD = 0.35
 
     if menor_dist < THRESHOLD:
         confianca = (1 - menor_dist) * 100
@@ -145,22 +160,11 @@ async def reconhecer(file: UploadFile = File(...)):
 
 @app.get("/usuarios")
 async def usuarios():
-    lista = [
-        {
-            "id": u["id"],
-            "nome": u["nome"],
-            "data_cadastro": u["data_cadastro"]
-        }
-        for u in facial_db.values()
-    ]
+    result = supabase.table("usuarios_face").select("id, nome, data_cadastro").execute()
 
-    return {"usuarios": lista}
+    return {"usuarios": result.data}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000))
-    )
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
